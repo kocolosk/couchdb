@@ -142,7 +142,7 @@ handle_call({request_group, RequestSeq}, From,
 
 handle_cast({start_compact, CompactFun}, #group_state{ compactor_pid=nil, 
         group=Group, init_args={view, RootDir, DbName, GroupId} } = State) ->
-    ?LOG_INFO("Starting view group compaction", []),
+    ?LOG_INFO("View index compaction starting for ~s ~s", [DbName, GroupId]),
     {ok, Db} = couch_db:open(DbName, []),
     {ok, Fd} = open_index_file(RootDir, DbName, <<GroupId/binary,".compact">>),
     NewGroup = reset_file(Db, Fd, DbName, Group),
@@ -154,35 +154,49 @@ handle_cast({start_compact, _}, State) ->
 
 handle_cast({compact_done, #group{fd=NewFd, current_seq=NewSeq} = NewGroup}, 
         #group_state{ 
-            group = #group{current_seq=OldSeq} = Group,
+            group = #group{current_seq=OldSeq, fd=OldFd} = Group,
             init_args = {view, RootDir, DbName, GroupId}, 
-            updater_pid = nil,
+            updater_pid = UpdaterPid,
             ref_counter = RefCounter
         } = State) when NewSeq >= OldSeq ->
-    ?LOG_INFO("View Group compaction complete", []),
+    ?LOG_INFO("View index compaction complete for ~s ~s", [DbName, GroupId]),
     BaseName = RootDir ++ "/." ++ ?b2l(DbName) ++ ?b2l(GroupId),
     FileName = BaseName ++ ".view",
     CompactName = BaseName ++".compact.view",
     file:delete(FileName),
     ok = file:rename(CompactName, FileName),
-    
+
+    %% if an updater is running, kill it and start a new one
+    NewUpdaterPid =
+    if is_pid(UpdaterPid) ->
+        unlink(UpdaterPid),
+        exit(UpdaterPid, view_compaction_complete),
+        spawn_link(fun()-> couch_view_updater:update(NewGroup) end);
+    true ->
+        nil
+    end,
+
     %% cleanup old group
+    unlink(OldFd),
     couch_ref_counter:drop(RefCounter),
     {ok, NewRefCounter} = couch_ref_counter:start([NewFd]),
     case Group#group.db of
         nil -> ok;
         Else -> couch_db:close(Else)
     end,
-    
-    erlang:send_after(1000, self(), delayed_commit),
+
+    self() ! delayed_commit,
     {noreply, State#group_state{
         group=NewGroup, 
         ref_counter=NewRefCounter,
-        compactor_pid=nil
+        compactor_pid=nil,
+        updater_pid=NewUpdaterPid
     }};
-handle_cast({compact_done, NewGroup}, #group_state{ 
+handle_cast({compact_done, NewGroup}, #group_state{ group = OldGroup,
         init_args={view, _RootDir, DbName, GroupId} } = State) ->
-    ?LOG_INFO("View index compaction still behind main file", []),
+    ?LOG_INFO("View index compaction still behind for ~s ~s -- current: ~p " ++
+        "compact: ~p", [DbName, GroupId, OldGroup#group.current_seq,
+            NewGroup#group.current_seq]),
     couch_db:close(NewGroup#group.db),
     {ok, Db} = couch_db:open(DbName, []),
     Pid = spawn_link(fun() -> 
@@ -241,8 +255,11 @@ handle_info({'EXIT', FromPid, {new_group, #group{db=Db}=Group}},
         {noreply, State#group_state{waiting_commit=true,
                 waiting_list=StillWaiting, group=Group2, updater_pid=Pid}}
     end;
-    
-handle_info({'EXIT', FromPid, reset}, 
+handle_info({'EXIT', _, {new_group, _}}, State) ->
+    %% message from an old (probably pre-compaction) updater; ignore
+    {noreply, State};
+
+handle_info({'EXIT', FromPid, reset},
         #group_state{
             init_args=InitArgs,
             updater_pid=UpPid,
@@ -257,6 +274,9 @@ handle_info({'EXIT', FromPid, reset},
     Error ->
         {stop, normal, reply_all(State, Error)}
     end;
+handle_info({'EXIT', _, reset}, State) ->
+    %% message from an old (probably pre-compaction) updater; ignore
+    {noreply, State};
     
 handle_info({'EXIT', _FromPid, normal}, State) ->
     {noreply, State};
