@@ -258,46 +258,29 @@ collect_updates(GroupedDocsAcc, ClientsAcc, MergeConflicts, FullCommit) ->
         {GroupedDocsAcc, ClientsAcc, FullCommit}
     end.
 
+rev_tree(DiskTree) ->
+    couch_key_tree:map(fun(_RevId, {IsDeleted, BodyPointer, UpdateSeq}) ->
+        {IsDeleted == 1, BodyPointer, UpdateSeq};
+    (_RevId, ?REV_MISSING) ->
+        ?REV_MISSING
+    end, DiskTree).
 
-btree_by_seq_split(#doc_info{id=Id, high_seq=KeySeq, revs=Revs}) ->
-    RevInfos = [{Rev, Seq, Bp} ||
-        #rev_info{rev=Rev,seq=Seq,deleted=false,body_sp=Bp} <- Revs],
-    DeletedRevInfos = [{Rev, Seq, Bp} ||
-        #rev_info{rev=Rev,seq=Seq,deleted=true,body_sp=Bp} <- Revs],
-    {KeySeq,{Id, RevInfos, DeletedRevInfos}}.
+disk_tree(RevTree) ->
+    couch_key_tree:map(fun(_RevId, {IsDeleted, BodyPointer, UpdateSeq}) ->
+        {if IsDeleted -> 1; true -> 0 end, BodyPointer, UpdateSeq};
+    (_RevId, ?REV_MISSING) ->
+        ?REV_MISSING
+    end, RevTree).
+    
+btree_by_seq_split(#full_doc_info{id=Id, update_seq=Seq, deleted=Del, rev_tree=T}) ->
+    {Seq, {Id, if Del -> 1; true -> 0 end, disk_tree(T)}}.
 
-btree_by_seq_join(KeySeq, {Id, RevInfos, DeletedRevInfos}) ->
-    #doc_info{
-        id = Id,
-        high_seq=KeySeq,
-        revs =
-            [#rev_info{rev=Rev,seq=Seq,deleted=false,body_sp = Bp} ||
-                {Rev, Seq, Bp} <- RevInfos] ++
-            [#rev_info{rev=Rev,seq=Seq,deleted=true,body_sp = Bp} ||
-                {Rev, Seq, Bp} <- DeletedRevInfos]};
-btree_by_seq_join(KeySeq,{Id, Rev, Bp, Conflicts, DelConflicts, Deleted}) ->
-    % 09 UPGRADE CODE
-    % this is the 0.9.0 and earlier by_seq record. It's missing the body pointers
-    % and individual seq nums for conflicts that are currently in the index,
-    % meaning the filtered _changes api will not work except for on main docs.
-    % Simply compact a 0.9.0 database to upgrade the index.
-    #doc_info{
-        id=Id,
-        high_seq=KeySeq,
-        revs = [#rev_info{rev=Rev,seq=KeySeq,deleted=Deleted,body_sp=Bp}] ++
-            [#rev_info{rev=Rev1,seq=KeySeq,deleted=false} || Rev1 <- Conflicts] ++
-            [#rev_info{rev=Rev2,seq=KeySeq,deleted=true} || Rev2 <- DelConflicts]}.
+btree_by_seq_join(Seq, {Id, Del, T}) ->
+    #full_doc_info{id=Id, update_seq=Seq, deleted=Del==1, rev_tree=rev_tree(T)}.
 
 btree_by_id_split(#full_doc_info{id=Id, update_seq=Seq,
         deleted=Deleted, rev_tree=Tree}) ->
-    DiskTree =
-    couch_key_tree:map(
-        fun(_RevId, {IsDeleted, BodyPointer, UpdateSeq}) ->
-            {if IsDeleted -> 1; true -> 0 end, BodyPointer, UpdateSeq};
-        (_RevId, ?REV_MISSING) ->
-            ?REV_MISSING
-        end, Tree),
-    {Id, {Seq, if Deleted -> 1; true -> 0 end, DiskTree}}.
+    {Id, {Seq, if Deleted -> 1; true -> 0 end, disk_tree(Tree)}}.
 
 btree_by_id_join(Id, {HighSeq, Deleted, DiskTree}) ->
     Tree =
@@ -543,14 +526,11 @@ merge_rev_trees(MergeConflicts, [NewDocs|RestDocsList],
 
 
 
-new_index_entries([], AccById, AccBySeq) ->
-    {AccById, AccBySeq};
-new_index_entries([FullDocInfo|RestInfos], AccById, AccBySeq) ->
-    #doc_info{revs=[#rev_info{deleted=Deleted}|_]} = DocInfo =
-            couch_doc:to_doc_info(FullDocInfo),
-    new_index_entries(RestInfos,
-        [FullDocInfo#full_doc_info{deleted=Deleted}|AccById],
-        [DocInfo|AccBySeq]).
+new_index_entries([], Acc) ->
+    Acc;
+new_index_entries([Info|Rest], Acc) ->
+    #doc_info{revs=[#rev_info{deleted=Del}|_]} = couch_doc:to_doc_info(Info),
+    new_index_entries(Rest, [Info#full_doc_info{deleted=Del}|Acc]).
 
 
 stem_full_doc_infos(#db{revs_limit=Limit}, DocInfos) ->
@@ -587,12 +567,13 @@ update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
     % the trees, the attachments are already written to disk)
     {ok, FlushedFullDocInfos} = flush_trees(Db2, NewFullDocInfos, []),
 
-    {IndexFullDocInfos, IndexDocInfos} =
-            new_index_entries(FlushedFullDocInfos, [], []),
+    IndexInfos = new_index_entries(FlushedFullDocInfos, []),
 
     % and the indexes
-    {ok, DocInfoByIdBTree2} = couch_btree:add_remove(DocInfoByIdBTree, IndexFullDocInfos, []),
-    {ok, DocInfoBySeqBTree2} = couch_btree:add_remove(DocInfoBySeqBTree, IndexDocInfos, RemoveSeqs),
+    {ok, DocInfoByIdBTree2} = couch_btree:add_remove(DocInfoByIdBTree,
+        IndexInfos, []),
+    {ok, DocInfoBySeqBTree2} = couch_btree:add_remove(DocInfoBySeqBTree,
+        IndexInfos, RemoveSeqs),
 
     Db3 = Db2#db{
         fulldocinfo_by_id_btree = DocInfoByIdBTree2,
@@ -743,29 +724,21 @@ copy_rev_tree_attachments(SrcDb, DestFd, Tree) ->
         end, Tree).
             
 
-copy_docs(Db, #db{fd=DestFd}=NewDb, InfoBySeq, Retry) ->
-    Ids = [Id || #doc_info{id=Id} <- InfoBySeq],
-    LookupResults = couch_btree:lookup(Db#db.fulldocinfo_by_id_btree, Ids),
-
+copy_docs(Db, #db{fd=DestFd}=NewDb, Infos, Retry) ->
     % write out the attachments
-    NewFullDocInfos0 = lists:map(
-        fun({ok, #full_doc_info{rev_tree=RevTree}=Info}) ->
-            Info#full_doc_info{rev_tree=copy_rev_tree_attachments(Db, DestFd, RevTree)}
-        end, LookupResults),
+    NewInfos0 = [Info#full_doc_info{rev_tree=copy_rev_tree_attachments(Db,
+        DestFd, RevTree)} || #full_doc_info{rev_tree=RevTree}=Info <- Infos],
+
     % write out the docs
     % we do this in 2 stages so the docs are written out contiguously, making
     % view indexing and replication faster.
-    NewFullDocInfos1 = lists:map(
-        fun(#full_doc_info{rev_tree=RevTree}=Info) ->
-            Info#full_doc_info{rev_tree=couch_key_tree:map_leafs(
-                fun(_Key, {IsDel, DocBody, Seq}) ->
-                    {ok, Pos} = couch_file:append_term_md5(DestFd, DocBody),
-                    {IsDel, Pos, Seq}
-                end, RevTree)}
-        end, NewFullDocInfos0),
+    NewInfos1 = [Info#full_doc_info{rev_tree=couch_key_tree:map_leafs(
+        fun(_Key, {IsDel, DocBody, Seq}) ->
+            {ok, Pos} = couch_file:append_term_md5(DestFd, DocBody),
+            {IsDel, Pos, Seq}
+        end, RevTree)} || #full_doc_info{rev_tree=RevTree}=Info <- NewInfos0],
 
-    NewFullDocInfos = stem_full_doc_infos(Db, NewFullDocInfos1),
-    NewDocInfos = [couch_doc:to_doc_info(Info) || Info <- NewFullDocInfos],
+    NewInfos = stem_full_doc_infos(Db, NewInfos1),
     RemoveSeqs =
     case Retry of
     false ->
@@ -773,16 +746,16 @@ copy_docs(Db, #db{fd=DestFd}=NewDb, InfoBySeq, Retry) ->
     true ->
         % We are retrying a compaction, meaning the documents we are copying may
         % already exist in our file and must be removed from the by_seq index.
+        Ids = [Id || #full_doc_info{id=Id} <- Infos],
         Existing = couch_btree:lookup(NewDb#db.fulldocinfo_by_id_btree, Ids),
         [Seq || {ok, #full_doc_info{update_seq=Seq}} <- Existing]
     end,
 
-    {ok, DocInfoBTree} = couch_btree:add_remove(
-            NewDb#db.docinfo_by_seq_btree, NewDocInfos, RemoveSeqs),
-    {ok, FullDocInfoBTree} = couch_btree:add_remove(
-            NewDb#db.fulldocinfo_by_id_btree, NewFullDocInfos, []),
-    NewDb#db{ fulldocinfo_by_id_btree=FullDocInfoBTree,
-              docinfo_by_seq_btree=DocInfoBTree}.
+    {ok, SeqTree} = couch_btree:add_remove(
+            NewDb#db.docinfo_by_seq_btree, NewInfos, RemoveSeqs),
+    {ok, IdTree} = couch_btree:add_remove(
+            NewDb#db.fulldocinfo_by_id_btree, NewInfos, []),
+    NewDb#db{fulldocinfo_by_id_btree=IdTree, docinfo_by_seq_btree=SeqTree}.
 
 
 
@@ -791,7 +764,7 @@ copy_compact(Db, NewDb0, Retry) ->
     NewDb = NewDb0#db{fsync_options=FsyncOptions},
     TotalChanges = couch_db:count_changes_since(Db, NewDb#db.update_seq),
     EnumBySeqFun =
-    fun(#doc_info{high_seq=Seq}=DocInfo, _Offset, {AccNewDb, AccUncopied, TotalCopied}) ->
+    fun(#full_doc_info{update_seq=Seq}=DocInfo, _Offset, {AccNewDb, AccUncopied, TotalCopied}) ->
         couch_task_status:update("Copied ~p of ~p changes (~p%)",
                 [TotalCopied, TotalChanges, (TotalCopied*100) div TotalChanges]),
         if TotalCopied rem 1000 =:= 0 ->

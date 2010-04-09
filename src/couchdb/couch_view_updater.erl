@@ -110,7 +110,7 @@ purge_index(#group{db=Db, views=Views, id_btree=IdBtree}=Group) ->
 
 
 load_doc(Db, DocInfo, MapQueue, DocOpts, IncludeDesign) ->
-    #doc_info{id=DocId, high_seq=Seq, revs=[#rev_info{deleted=Deleted}|_]} = DocInfo,
+    #full_doc_info{id=DocId, update_seq=Seq, deleted=Deleted} = DocInfo,
     case {IncludeDesign, DocId} of
     {false, <<?DESIGN_DOC_PREFIX, _/binary>>} -> % we skip design docs
         ok;
