@@ -275,8 +275,31 @@ disk_tree(RevTree) ->
 btree_by_seq_split(#full_doc_info{id=Id, update_seq=Seq, deleted=Del, rev_tree=T}) ->
     {Seq, {Id, if Del -> 1; true -> 0 end, disk_tree(T)}}.
 
-btree_by_seq_join(Seq, {Id, Del, T}) ->
-    #full_doc_info{id=Id, update_seq=Seq, deleted=Del==1, rev_tree=rev_tree(T)}.
+btree_by_seq_join(Seq, {Id, Del, T}) when is_integer(Del) ->
+    #full_doc_info{id=Id, update_seq=Seq, deleted=Del==1, rev_tree=rev_tree(T)};
+btree_by_seq_join(KeySeq, {Id, RevInfos, DeletedRevInfos}) ->
+    % 1.0 stored #doc_info records in the seq tree.  compact to upgrade.
+    ?LOG_INFO("calling old join fun", []),
+    #doc_info{
+        id = Id,
+        high_seq=KeySeq,
+        revs =
+            [#rev_info{rev=Rev,seq=Seq,deleted=false,body_sp = Bp} ||
+                {Rev, Seq, Bp} <- RevInfos] ++
+            [#rev_info{rev=Rev,seq=Seq,deleted=true,body_sp = Bp} ||
+                {Rev, Seq, Bp} <- DeletedRevInfos]};
+btree_by_seq_join(KeySeq,{Id, Rev, Bp, Conflicts, DelConflicts, Deleted}) ->
+    % 09 UPGRADE CODE
+    % this is the 0.9.0 and earlier by_seq record. It's missing the body pointers
+    % and individual seq nums for conflicts that are currently in the index,
+    % meaning the filtered _changes api will not work except for on main docs.
+    % Simply compact a 0.9.0 database to upgrade the index.
+    #doc_info{
+        id=Id,
+        high_seq=KeySeq,
+        revs = [#rev_info{rev=Rev,seq=KeySeq,deleted=Deleted,body_sp=Bp}] ++
+            [#rev_info{rev=Rev1,seq=KeySeq,deleted=false} || Rev1 <- Conflicts] ++
+            [#rev_info{rev=Rev2,seq=KeySeq,deleted=true} || Rev2 <- DelConflicts]}.
 
 btree_by_id_split(#full_doc_info{id=Id, update_seq=Seq,
         deleted=Deleted, rev_tree=Tree}) ->
@@ -724,7 +747,21 @@ copy_rev_tree_attachments(SrcDb, DestFd, Tree) ->
         end, Tree).
             
 
-copy_docs(Db, #db{fd=DestFd}=NewDb, Infos, Retry) ->
+merge_lookups(Infos, []) ->
+    Infos;
+merge_lookups([], _) ->
+    [];
+merge_lookups([#doc_info{}|RestInfos], [{ok, FullDocInfo}|RestLookups]) ->
+    [FullDocInfo|merge_lookups(RestInfos, RestLookups)];
+merge_lookups([FullDocInfo|RestInfos], Lookups) ->
+    [FullDocInfo|merge_lookups(RestInfos, Lookups)].
+
+copy_docs(Db, #db{fd=DestFd}=NewDb, MixedInfos, Retry) ->
+    % lookup any necessary full_doc_infos
+    DocInfoIds = [Id || #doc_info{id=Id} <- MixedInfos],
+    LookupResults = couch_btree:lookup(Db#db.id_tree, DocInfoIds),
+    Infos = merge_lookups(MixedInfos, LookupResults),
+    
     % write out the attachments
     NewInfos0 = [Info#full_doc_info{rev_tree=copy_rev_tree_attachments(Db,
         DestFd, RevTree)} || #full_doc_info{rev_tree=RevTree}=Info <- Infos],
@@ -764,7 +801,13 @@ copy_compact(Db, NewDb0, Retry) ->
     NewDb = NewDb0#db{fsync_options=FsyncOptions},
     TotalChanges = couch_db:count_changes_since(Db, NewDb#db.update_seq),
     EnumBySeqFun =
-    fun(#full_doc_info{update_seq=Seq}=DocInfo, _Offset, {AccNewDb, AccUncopied, TotalCopied}) ->
+    fun(DocInfo, _Offset, {AccNewDb, AccUncopied, TotalCopied}) ->
+        case DocInfo of
+        #full_doc_info{update_seq=Seq} ->
+            ok;
+        #doc_info{high_seq=Seq} ->
+            ok
+        end,
         couch_task_status:update("Copied ~p of ~p changes (~p%)",
                 [TotalCopied, TotalChanges, (TotalCopied*100) div TotalChanges]),
         if TotalCopied rem 1000 =:= 0 ->

@@ -877,7 +877,12 @@ changes_since(Db, Style, StartSeq, Fun, Acc) ->
     
 changes_since(Db, Style, StartSeq, Fun, Options, Acc) ->
     Wrapper = fun(FullDocInfo, _Offset, Acc2) ->
-            #doc_info{revs=Revs} = DocInfo = couch_doc:to_doc_info(FullDocInfo),
+            case FullDocInfo of
+            #full_doc_info{} ->
+                #doc_info{revs=Revs} = DocInfo = couch_doc:to_doc_info(FullDocInfo);
+            #doc_info{revs=Revs} ->
+                DocInfo = FullDocInfo
+            end,
             case Style of
             main_only ->
                 Infos = [DocInfo];
