@@ -26,24 +26,6 @@
 
 -include("couch_db.hrl").
 
--record(proc, {
-    pid,
-    lang,
-    ddoc_keys = [],
-    prompt_fun,
-    set_timeout_fun,
-    stop_fun
-}).
-
--record(qserver, {
-    langs, % Keyed by language name, value is {Mod,Func,Arg}
-    pid_procs, % Keyed by PID, valus is a #proc record.
-    lang_procs, % Keyed by language name, value is a #proc record
-    lang_limits, % Keyed by language name, value is {Lang, Limit, Current}
-    waitlist = [],
-    config
-}).
-
 start_link() ->
     gen_server:start_link({local, couch_query_servers}, couch_query_servers, [], []).
 
@@ -517,14 +499,13 @@ teach_ddoc(DDoc, {DDocId, _Rev}=DDocKey, #proc{ddoc_keys=Keys}=Proc) ->
 
 get_ddoc_process(#doc{} = DDoc, DDocKey) ->
     % remove this case statement
-    case gen_server:call(couch_query_servers, {get_proc, DDoc, DDocKey}) of
-    {ok, Proc, {QueryConfig}} ->
+    case gen_server:call(couch_proc_manager, {get_proc, DDoc, DDocKey}) of
+    {ok, Proc, QueryConfig} ->
         % process knows the ddoc
-        case (catch proc_prompt(Proc, [<<"reset">>, {QueryConfig}])) of
+        case (catch proc_prompt(Proc, [<<"reset">>, QueryConfig])) of
         true ->
-            proc_set_timeout(Proc, ?getv(<<"timeout">>, QueryConfig)),
-            link(Proc#proc.pid),
-            gen_server:call(couch_query_servers, {unlink_proc, Proc#proc.pid}),
+            proc_set_timeout(Proc, list_to_integer(couch_config:get(
+                                "couchdb", "os_process_timeout", "5000"))),
             Proc;
         _ ->
             catch proc_stop(Proc),
@@ -535,13 +516,12 @@ get_ddoc_process(#doc{} = DDoc, DDocKey) ->
     end.
 
 get_os_process(Lang) ->
-    case gen_server:call(couch_query_servers, {get_proc, Lang}) of
-    {ok, Proc, {QueryConfig}} ->
-        case (catch proc_prompt(Proc, [<<"reset">>, {QueryConfig}])) of
+    case gen_server:call(couch_proc_manager, {get_proc, Lang}) of
+    {ok, Proc, QueryConfig} ->
+        case (catch proc_prompt(Proc, [<<"reset">>, QueryConfig])) of
         true ->
-            proc_set_timeout(Proc, ?getv(<<"timeout">>, QueryConfig)),
-            link(Proc#proc.pid),
-            gen_server:call(couch_query_servers, {unlink_proc, Proc#proc.pid}),
+            proc_set_timeout(Proc, list_to_integer(couch_config:get(
+                                "couchdb", "os_process_timeout", "5000"))),
             Proc;
         _ ->
             catch proc_stop(Proc),
@@ -552,7 +532,7 @@ get_os_process(Lang) ->
     end.
 
 ret_os_process(Proc) ->
-    true = gen_server:call(couch_query_servers, {ret_proc, Proc}),
+    true = gen_server:call(couch_proc_manager, {ret_proc, Proc}),
     catch unlink(Proc#proc.pid),
     ok.
 
