@@ -33,9 +33,15 @@ handle_call({get_proc, Lang}, {Client, _}, State) ->
     ets:insert(State#state.tab, Proc),
     {reply, {ok, Proc, get_query_server_config()}, State};
 
-handle_call({ret_proc, #proc{client=Ref} = Proc}, _From, State) ->
+handle_call({ret_proc, #proc{client=Ref, pid=Pid} = Proc}, _From, State) ->
     erlang:demonitor(Ref, [flush]),
-    ets:insert(State#state.tab, Proc#proc{client=nil}),
+    % We need to check if the process is alive here, as the client could be
+    % handing us a #proc{} with a dead one.  We would have already removed the
+    % #proc{} from our own table, so the alternative is to do a lookup in the
+    % table before the insert.  Don't know which approach is cheaper.
+    case is_process_alive(Pid) of true->
+        ets:insert(State#state.tab, Proc#proc{client=nil});
+    false -> ok end,
     {reply, true, State};
 
 handle_call(_Call, _From, State) ->
@@ -44,7 +50,8 @@ handle_call(_Call, _From, State) ->
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-handle_info({'EXIT', Pid, _Reason}, State) ->
+handle_info({'EXIT', Pid, Reason}, State) ->
+    ?LOG_INFO("~p ~p died ~p", [?MODULE, Pid, Reason]),
     ets:delete(State#state.tab, Pid),
     {noreply, State};
 
