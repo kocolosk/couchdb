@@ -21,17 +21,25 @@ handle_call(get_table, _From, State) ->
 
 handle_call({get_proc, #doc{body={Props}}=DDoc, DDocKey}, {Client, _}, State) ->
     Lang = couch_util:get_value(<<"language">>, Props, <<"javascript">>),
-    Procs = get_procs(State#state.tab, Lang),
-    {ok, Proc0} = proc_with_ddoc(DDoc, DDocKey, Procs),
-    Proc = Proc0#proc{client = erlang:monitor(process, Client)},
-    ets:insert(State#state.tab, Proc),
-    {reply, {ok, Proc, get_query_server_config()}, State};
+    try get_procs(State#state.tab, Lang) of
+    Procs ->
+        {ok, Proc0} = proc_with_ddoc(DDoc, DDocKey, Procs),
+        Proc = Proc0#proc{client = erlang:monitor(process, Client)},
+        ets:insert(State#state.tab, Proc),
+        {reply, {ok, Proc, get_query_server_config()}, State}
+    catch {unknown_query_language, _} ->
+        {reply, {unknown_query_language, Lang}, State}
+    end;
 
 handle_call({get_proc, Lang}, {Client, _}, State) ->
-    [Proc0|_] = get_procs(State#state.tab, Lang),
-    Proc = Proc0#proc{client = erlang:monitor(process, Client)},
-    ets:insert(State#state.tab, Proc),
-    {reply, {ok, Proc, get_query_server_config()}, State};
+    try get_procs(State#state.tab, Lang) of
+    [Proc0|_] ->
+        Proc = Proc0#proc{client = erlang:monitor(process, Client)},
+        ets:insert(State#state.tab, Proc),
+        {reply, {ok, Proc, get_query_server_config()}, State}
+    catch {unknown_query_language, _} ->
+        {reply, {unknown_query_language, Lang}, State}
+    end;
 
 handle_call({ret_proc, #proc{client=Ref, pid=Pid} = Proc}, _From, State) ->
     erlang:demonitor(Ref, [flush]),
@@ -110,7 +118,7 @@ new_proc(Lang) when is_list(Lang) ->
     undefined ->
         case couch_config:get("native_query_servers", Lang) of
         undefined ->
-            {unknown_query_language, Lang};
+            throw({unknown_query_language, Lang});
         SpecStr ->
             {ok, {M,F,A}} = couch_util:parse_term(SpecStr),
             {ok, Pid} = apply(M, F, A),
