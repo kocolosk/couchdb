@@ -64,16 +64,7 @@ handle_info({'EXIT', Pid, Reason}, State) ->
     {noreply, State};
 
 handle_info({'DOWN', Ref, _, _, _Reason}, State) ->
-    Match = #proc{
-        pid = '_',
-        lang = '_',
-        client = Ref,
-        ddoc_keys = '_',
-        prompt_fun = '_',
-        set_timeout_fun = '_',
-        stop_fun = '_'
-    },
-    case ets:match_object(State#state.tab, Match) of
+    case ets:match_object(State#state.tab, #proc{client=Ref, _='_'}) of
     [] ->
         ok;
     [Proc] ->
