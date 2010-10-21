@@ -3,7 +3,7 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, 
     code_change/3]).
 
--export([start_link/0]).
+-export([start_link/0, get_proc_count/0]).
 
 -include("couch_db.hrl").
 
@@ -12,12 +12,18 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+get_proc_count() ->
+    gen_server:call(?MODULE, get_proc_count).
+
 init([]) ->
     process_flag(trap_exit, true),
     {ok, #state{tab = ets:new(procs, [{keypos, #proc.pid}])}}.
 
 handle_call(get_table, _From, State) ->
     {reply, State#state.tab, State};
+
+handle_call(get_proc_count, _From, State) ->
+    {reply, ets:info(State#state.tab, size), State};
 
 handle_call({get_proc, #doc{body={Props}}=DDoc, DDocKey}, {Client, _}, State) ->
     Lang = couch_util:get_value(<<"language">>, Props, <<"javascript">>),
