@@ -85,16 +85,7 @@ code_change(_OldVsn, State, _Extra) ->
 get_procs(Tab, Lang) when is_binary(Lang) ->
     get_procs(Tab, binary_to_list(Lang));
 get_procs(Tab, Lang) when is_list(Lang) ->
-    Match = #proc{
-        pid = '_',
-        lang = Lang,
-        client = nil,
-        ddoc_keys = '_',
-        prompt_fun = '_',
-        set_timeout_fun = '_',
-        stop_fun = '_'
-    },
-    case ets:match_object(Tab, Match) of
+    case ets:match_object(Tab, #proc{lang=Lang, client=nil, _='_'}) of
     [] ->
         {ok, NewProc} = new_proc(Lang), % check OS process limit
         [NewProc];
