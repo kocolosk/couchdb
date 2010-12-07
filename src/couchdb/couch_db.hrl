@@ -45,6 +45,9 @@
     gen_event:sync_notify(error_logger,
             {self(), couch_error, {Format, Args}})).
 
+-type branch() :: {Key::term(), Value::term(), tree()}.
+-type path() :: {Start::pos_integer(), branch()}.
+-type tree() :: [branch()]. % sorted by key
 
 -record(rev_info,
     {
