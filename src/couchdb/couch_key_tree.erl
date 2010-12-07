@@ -16,31 +16,26 @@
 -export([map/2, get_all_leafs/1, count_leafs/1, remove_leafs/2,
     get_all_leafs_full/1,stem/2,map_leafs/2]).
 
-% a key tree looks like this:
-% Tree -> [] or [{Key, Value, ChildTree} | SiblingTree]
-% ChildTree -> Tree
-% SiblingTree -> [] or [{SiblingKey, Value, Tree} | Tree]
-% And each Key < SiblingKey
-
+-type branch() :: {Key::term(), Value::term(), tree()}.
+-type path() :: {Start::pos_integer(), branch()}.
+-type tree() :: [branch()]. % sorted by key
 
 % partial trees arranged by how much they are cut off.
 
-merge(A, B) ->
-    {Merged, HasConflicts} =
-    lists:foldl(
-        fun(InsertTree, {AccTrees, AccConflicts}) ->
-            {ok, Merged, Conflicts} = merge_one(AccTrees, InsertTree, [], false),
-            {Merged, Conflicts or AccConflicts}
-        end,
-        {A, false}, B),
-    if HasConflicts or
-            ((length(Merged) =/= length(A)) and (length(Merged) =/= length(B))) ->
+-spec merge([path()], path()) -> {[path()], conflicts | no_conflicts}.
+merge(Paths, Path) ->
+    {ok, Merged, HasConflicts} = merge_one(Paths, Path, [], false),
+    if HasConflicts ->
+        Conflicts = conflicts;
+    (length(Merged) =/= length(Paths)) and (length(Merged) =/= 1) ->
         Conflicts = conflicts;
     true ->
         Conflicts = no_conflicts
     end,
     {lists:sort(Merged), Conflicts}.
 
+-spec merge_one(Original::[path()], Inserted::path(), [path()], boolean()) ->
+    {ok, Merged::[path()], NewConflicts::boolean()}.
 merge_one([], Insert, OutAcc, ConflictsAcc) ->
     {ok, [Insert | OutAcc], ConflictsAcc};
 merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Acc, HasConflicts) ->
@@ -53,6 +48,8 @@ merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Acc, HasConflicts) ->
         merge_one(Rest, {StartInsert, TreeInsert}, AccOut, HasConflicts)
     end.
 
+-spec merge_at(tree(), Place::integer(), tree()) ->
+    {ok, Merged::tree(), HasConflicts::boolean()} | no.
 merge_at(_Ours, _Place, []) ->
     no;
 merge_at([], _Place, _Insert) ->
@@ -93,6 +90,8 @@ merge_at([Tree | Sibs], 0, InsertTree) ->
     end.
 
 % key tree functions
+
+-spec merge_simple(tree(), tree()) -> {Merged::tree(), NewConflicts::boolean()}.
 merge_simple([], B) ->
     {B, false};
 merge_simple(A, []) ->
@@ -156,7 +155,7 @@ remove_leafs(Trees, Keys) ->
         fun({PathPos, Path},TreeAcc) ->
             [SingleTree] = lists:foldl(
                 fun({K,V},NewTreeAcc) -> [{K,V,NewTreeAcc}] end, [], Path),
-            {NewTrees, _} = merge(TreeAcc, [{PathPos + 1 - length(Path), SingleTree}]),
+            {NewTrees, _} = merge(TreeAcc, {PathPos + 1 - length(Path), SingleTree}),
             NewTrees
         end, [], FilteredPaths),
     {NewTree, RemovedKeys}.
@@ -318,7 +317,7 @@ stem(Trees, Limit) ->
         fun({PathPos, Path},TreeAcc) ->
             [SingleTree] = lists:foldl(
                 fun({K,V},NewTreeAcc) -> [{K,V,NewTreeAcc}] end, [], Path),
-            {NewTrees, _} = merge(TreeAcc, [{PathPos + 1 - length(Path), SingleTree}]),
+            {NewTrees, _} = merge(TreeAcc, {PathPos + 1 - length(Path), SingleTree}),
             NewTrees
         end, [], Paths2).
 
