@@ -15,7 +15,7 @@
 
 main(_) ->
     test_util:init_code_path(),
-    etap:plan(13),
+    etap:plan(15),
     case (catch test()) of
         ok ->
             etap:end_tests();
@@ -85,6 +85,18 @@ test() ->
         {[TwoChildSibs2], no_conflicts},
         couch_key_tree:merge([Stemmed1bb], TwoChildSibs2),
         "Merging a non-linear path that forks before the start of the tree."
+    ),
+
+    etap:is(
+        {[TwoChildSibs2], no_conflicts},
+        couch_key_tree:merge([Stemmed1b], TwoChildSibs2),
+        "Merging a non-linear path that forks at the start of the tree."
+    ),
+
+    etap:is(
+        {[TwoChildSibs2], no_conflicts},
+        couch_key_tree:merge([OneChild], TwoChildSibs2),
+        "Merging a non-linear path that forks after the start of the tree."
     ),
 
     etap:is(

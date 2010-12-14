@@ -68,7 +68,7 @@ merge_at(OurTree, Place, [{Key, Value, SubTree}|Sibs]) when Place < 0 ->
     % inserted starts earlier than committed, need to drill into insert subtree
     case merge_at(OurTree, Place + 1, SubTree) of
     {ok, Merged, Conflicts} ->
-        {ok, [{Key, Value, Merged}], Conflicts};
+        {ok, [{Key, Value, Merged} | Sibs], Conflicts};
     no ->
         % If we were only inserting pure document paths here we would not have
         % any siblings. However, in the case of documents with more than two
@@ -84,14 +84,30 @@ merge_at(OurTree, Place, [{Key, Value, SubTree}|Sibs]) when Place < 0 ->
             no
         end
     end;
-merge_at([{Key, Value, SubTree}|Sibs], 0, [{Key, _Value, InsertSubTree}]) ->
-    {Merged, Conflicts} = merge_simple(SubTree, InsertSubTree),
-    {ok, [{Key, Value, Merged} | Sibs], Conflicts};
+merge_at([{Key, _, _} | _] = Ours, 0, [{Key, _, _} | _] = Insert) ->
+    {Merged, Conflicts} = merge_simple(Ours, Insert),
+    {ok, Merged, Conflicts};
+% The following guard is satisfied when Place = 0, because we only ever
+% drill down into one of the trees:
+%
+%   (length(Ours) =:= 1 or length(Insert) =:= 1)
+%
+% The remaining merge_at clauses take advantage of this fact.
 merge_at([{OurKey, _, _} | _], 0, [{Key, _, _}]) when OurKey > Key ->
     % siblings keys are ordered, no point in continuing
     no;
-merge_at([Tree | Sibs], 0, InsertTree) ->
+merge_at([{OurKey, _, _}], 0, [{Key, _, _} | _]) when OurKey < Key ->
+    % again, relying on the ordering of sibling keys
+    no;
+merge_at([Tree | Sibs], 0, [_] = InsertTree) ->
     case merge_at(Sibs, 0, InsertTree) of
+    {ok, Merged, Conflicts} ->
+        {ok, [Tree | Merged], Conflicts};
+    no ->
+        no
+    end;
+merge_at([_] = OurTree, 0, [Tree | Sibs]) ->
+    case merge_at(OurTree, 0, Sibs) of
     {ok, Merged, Conflicts} ->
         {ok, [Tree | Merged], Conflicts};
     no ->
