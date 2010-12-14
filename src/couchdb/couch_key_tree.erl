@@ -38,6 +38,7 @@ merge_one([{Start, Tree}|Rest], {StartInsert, TreeInsert}, Acc, HasConflicts) ->
     case merge_at([Tree], StartInsert - Start, [TreeInsert]) of
     {ok, [Merged], Conflicts} ->
         MergedStart = lists:min([Start, StartInsert]),
+        % This is why we need to check for siblings down in merge_at/3
         merge_one(Rest, {MergedStart, Merged}, Acc, Conflicts or HasConflicts);
     no ->
         AccOut = [{Start, Tree} | Acc],
@@ -63,13 +64,25 @@ merge_at([{Key, Value, SubTree}|Sibs], Place, InsertTree) when Place > 0 ->
             no
         end
     end;
-merge_at(OurTree, Place, [{Key, Value, SubTree}]) when Place < 0 ->
+merge_at(OurTree, Place, [{Key, Value, SubTree}|Sibs]) when Place < 0 ->
     % inserted starts earlier than committed, need to drill into insert subtree
     case merge_at(OurTree, Place + 1, SubTree) of
     {ok, Merged, Conflicts} ->
         {ok, [{Key, Value, Merged}], Conflicts};
     no ->
-        no
+        % If we were only inserting pure document paths here we would not have
+        % any siblings. However, in the case of documents with more than two
+        % edit branches, it's possible that the inserted document path got
+        % merged into the first branch we inspected, and now we're trying
+        % to merge that branch (which might split into multiple branches at any
+        % point) into another branch in the tree. In short, we do need to
+        % process siblings in the InsertTree.
+        case merge_at(OurTree, Place, Sibs) of
+        {ok, Merged, Conflicts} ->
+            {ok, [{Key, Value, SubTree} | Merged], Conflicts};
+        no ->
+            no
+        end
     end;
 merge_at([{Key, Value, SubTree}|Sibs], 0, [{Key, _Value, InsertSubTree}]) ->
     {Merged, Conflicts} = merge_simple(SubTree, InsertSubTree),
