@@ -41,7 +41,9 @@
     handler
 }).
 
-server() -> "http://127.0.0.1:5984/".
+server() ->
+    "http://127.0.0.1:" ++ couch_config:get("httpd", "port", "5984") ++ "/".
+
 dbname() -> "etap-test-db".
 admin_user_ctx() -> {user_ctx, #user_ctx{roles=[<<"_admin">>]}}.
 

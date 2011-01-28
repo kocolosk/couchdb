@@ -237,7 +237,10 @@ get_db() ->
 get_dbname(local) ->
     "etap-test-db";
 get_dbname(remote) ->
-    "http://127.0.0.1:5984/etap-test-db/".
+    server() ++ "etap-test-db/".
+
+server() ->
+    "http://127.0.0.1:" ++ couch_config:get("httpd", "port", "5984") ++ "/".
 
 get_update_seq() ->
     Db = get_db(),

@@ -19,7 +19,9 @@ default_config() ->
         test_util:source_file("test/etap/180-http-proxy.ini")
     ].
 
-server() -> "http://127.0.0.1:5984/_test/".
+server() ->
+    "http://127.0.0.1:" ++ couch_config:get("httpd","port","5984") ++ "/_test/".
+
 proxy() -> "http://127.0.0.1:5985/".
 external() -> "https://www.google.com/".
 
@@ -320,7 +322,8 @@ test_passes_chunked_body_back() ->
 
 test_connect_error() ->
     Local = fun({ok, "500", _Headers, _Body}) -> true; (_) -> false end,
-    Req = #req{opts=[{url, "http://127.0.0.1:5984/_error"}]},
+    Server = "http://127.0.0.1:" ++ couch_config:get("httpd", "port", "5984"),
+    Req = #req{opts=[{url, Server ++ "/_error"}]},
     check_request("Connect error", Req, no_remote, Local).
 
 
