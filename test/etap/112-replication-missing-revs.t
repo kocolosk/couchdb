@@ -42,7 +42,8 @@
 config_files() ->
     lists:map(fun test_util:build_file/1, [
         "etc/couchdb/default_dev.ini",
-        "etc/couchdb/local_dev.ini"
+        "etc/couchdb/local_dev.ini",
+        "test/etap/random_port.ini"
     ]).
 
 main(_) ->
@@ -189,7 +190,9 @@ start_changes_feed(remote, Since, Continuous) ->
     couch_rep_changes_feed:start_link(self(), Db, Since, Props).
 
 server() ->
-    "http://127.0.0.1:" ++ couch_config:get("httpd", "port", "5984") ++ "/".
+    lists:concat([
+        "http://127.0.0.1:", mochiweb_socket_server:get(couch_httpd, port), "/"
+    ]).
 
 couch_rep_pid(Db) ->
     spawn(fun() -> couch_rep_pid_loop(Db) end).

@@ -13,14 +13,12 @@
 
 -record(req, {method=get, path="", headers=[], body="", opts=[]}).
 
-default_config() ->
-    [
-        test_util:build_file("etc/couchdb/default_dev.ini"),
-        test_util:build_file("etc/couchdb/local_dev.ini")
-    ].
-
 server() ->
-    "http://127.0.0.1:" ++ couch_config:get("httpd","port","5984") ++ "/_test/".
+    lists:concat([
+        "http://127.0.0.1:",
+        mochiweb_socket_server:get(couch_httpd, port),
+        "/_test/"
+    ]).
 
 proxy() ->
     "http://127.0.0.1:" ++ integer_to_list(test_web:get_port()) ++ "/".
@@ -69,7 +67,7 @@ check_request(Name, Req, Remote, Local) ->
     Resp.
 
 test() ->
-    couch_server_sup:start_link(default_config()),
+    couch_server_sup:start_link(test_util:config_files()),
     ibrowse:start(),
     crypto:start(),
 
@@ -87,6 +85,9 @@ test() ->
         "{couch_httpd_proxy, handle_proxy_req,<<\"http://127.0.0.1:49151/\">>}",
         false
     ),
+
+    % let couch_httpd restart
+    timer:sleep(100),
 
     test_basic(),
     test_alternate_status(),
@@ -338,8 +339,12 @@ test_passes_chunked_body_back() ->
 
 test_connect_error() ->
     Local = fun({ok, "500", _Headers, _Body}) -> true; (_) -> false end,
-    Server = "http://127.0.0.1:" ++ couch_config:get("httpd", "port", "5984"),
-    Req = #req{opts=[{url, Server ++ "/_error"}]},
+    Url = lists:concat([
+        "http://127.0.0.1:",
+        mochiweb_socket_server:get(couch_httpd, port),
+        "/_error"
+    ]),
+    Req = #req{opts=[{url, Url}]},
     check_request("Connect error", Req, no_remote, Local).
 
 

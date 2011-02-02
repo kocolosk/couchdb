@@ -42,16 +42,12 @@
 }).
 
 server() ->
-    "http://127.0.0.1:" ++ couch_config:get("httpd", "port", "5984") ++ "/".
+    lists:concat([
+        "http://127.0.0.1:", mochiweb_socket_server:get(couch_httpd, port), "/"
+    ]).
 
 dbname() -> "etap-test-db".
 admin_user_ctx() -> {user_ctx, #user_ctx{roles=[<<"_admin">>]}}.
-
-config_files() ->
-    lists:map(fun test_util:build_file/1, [
-        "etc/couchdb/default_dev.ini",
-        "etc/couchdb/local_dev.ini"
-    ]).
 
 main(_) ->
     test_util:init_code_path(),
@@ -67,7 +63,7 @@ main(_) ->
     ok.
 
 test() ->
-    couch_server_sup:start_link(config_files()),
+    couch_server_sup:start_link(test_util:config_files()),
     ibrowse:start(),
     crypto:start(),
 
@@ -119,6 +115,9 @@ test() ->
     ok = couch_config:set("vhosts", "*.example2.com/test", "/*", false),
     ok = couch_config:set("vhosts", "*/test1", 
             "/etap-test-db/_design/doc1/_show/test", false), 
+
+    % let couch_httpd restart
+    timer:sleep(100),
 
     test_regular_request(),
     test_vhost_request(),
