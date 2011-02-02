@@ -16,13 +16,15 @@
 default_config() ->
     [
         test_util:build_file("etc/couchdb/default_dev.ini"),
-        test_util:source_file("test/etap/180-http-proxy.ini")
+        test_util:build_file("etc/couchdb/local_dev.ini")
     ].
 
 server() ->
     "http://127.0.0.1:" ++ couch_config:get("httpd","port","5984") ++ "/_test/".
 
-proxy() -> "http://127.0.0.1:5985/".
+proxy() ->
+    "http://127.0.0.1:" ++ integer_to_list(test_web:get_port()) ++ "/".
+
 external() -> "https://www.google.com/".
 
 main(_) ->
@@ -70,8 +72,22 @@ test() ->
     couch_server_sup:start_link(default_config()),
     ibrowse:start(),
     crypto:start(),
+
+    % start the test_web server on a random port
     test_web:start_link(),
+    Url = lists:concat([
+        "{couch_httpd_proxy, handle_proxy_req, <<\"http://127.0.0.1:",
+        test_web:get_port(),
+        "/\">>}"
+    ]),
+    couch_config:set("httpd_global_handlers", "_test", Url, false),
     
+    % 49151 is IANA Reserved, let's assume no one is listening there
+    couch_config:set("httpd_global_handlers", "_error",
+        "{couch_httpd_proxy, handle_proxy_req,<<\"http://127.0.0.1:49151/\">>}",
+        false
+    ),
+
     test_basic(),
     test_alternate_status(),
     test_trailing_slash(),
