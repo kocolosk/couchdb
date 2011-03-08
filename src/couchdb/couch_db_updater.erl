@@ -444,6 +444,38 @@ refresh_validate_doc_funs(Db) ->
         end, DesignDocs),
     Db#db{validate_doc_funs=ProcessDocFuns}.
 
+flush_tree(Fd, NewRevTree, NewSeq) ->
+    couch_key_tree:map(
+        fun(_Rev, Value) ->
+            case Value of
+            #doc{atts=Atts,deleted=IsDeleted}=Doc ->
+                % this node value is actually an unwritten document summary,
+                % write to disk.
+                % make sure the Fd in the written bins is the same Fd we are
+                % and convert bins, removing the FD.
+                % All bins should have been written to disk already.
+                DiskAtts =
+                case Atts of
+                [] -> [];
+                [#att{data={BinFd, _Sp}} | _ ] when BinFd == Fd ->
+                    [{N,T,P,AL,DL,R,M,E}
+                        || #att{name=N,type=T,data={_,P},md5=M,revpos=R,
+                               att_len=AL,disk_len=DL,encoding=E}
+                        <- Atts];
+                _ ->
+                    % BinFd must not equal our Fd. This can happen when a database
+                    % is being switched out during a compaction
+                    ?LOG_DEBUG("File where the attachments are written has"
+                            " changed. Possibly retrying.", []),
+                    throw(retry)
+                end,
+                {ok, NewSummaryPointer} =
+                    couch_file:append_term_md5(Fd, {Doc#doc.body, DiskAtts}),
+                {IsDeleted, NewSummaryPointer, NewSeq};
+            _ ->
+                Value
+            end
+        end, NewRevTree).
 
 send_result(Client, Id, OriginalRevs, NewResult) ->
     % used to send a result to the client
@@ -527,40 +559,9 @@ modify_full_doc_info(Db, Id, MergeConflicts, OldDocInfo,
         {OldDocInfo, AccSeq};
     true ->
         NewSeq = AccSeq+1,
-        FlushedRevTree = couch_key_tree:map(
-            fun(_Rev, Value) ->
-                case Value of
-                #doc{atts=Atts,deleted=IsDeleted}=Doc ->
-                    % this node value is actually an unwritten document summary,
-                    % write to disk.
-                    % make sure the Fd in the written bins is the same Fd we are
-                    % and convert bins, removing the FD.
-                    % All bins should have been written to disk already.
-                    DiskAtts =
-                    case Atts of
-                    [] -> [];
-                    [#att{data={BinFd, _Sp}} | _ ] when BinFd == Fd ->
-                        [{N,T,P,AL,DL,R,M,E}
-                            || #att{name=N,type=T,data={_,P},md5=M,revpos=R,
-                                   att_len=AL,disk_len=DL,encoding=E}
-                            <- Atts];
-                    _ ->
-                        % BinFd must not equal our Fd. This can happen when a database
-                        % is being switched out during a compaction
-                        ?LOG_DEBUG("File where the attachments are written has"
-                                " changed. Possibly retrying.", []),
-                        throw(retry)
-                    end,
-                    {ok, NewSummaryPointer} =
-                        couch_file:append_term_md5(Fd, {Doc#doc.body, DiskAtts}),
-                    {IsDeleted, NewSummaryPointer, NewSeq};
-                _ ->
-                    Value
-                end
-            end, NewRevTree),
         NewFullDocInfo = #full_doc_info{id=Id,
                     update_seq=NewSeq,
-                    rev_tree=FlushedRevTree},
+                    rev_tree=flush_tree(Fd, NewRevTree, NewSeq)},
         % get the deleted flag
         #doc_info{revs=[#rev_info{deleted=Deleted}|_]} =
                         couch_doc:to_doc_info(NewFullDocInfo),
