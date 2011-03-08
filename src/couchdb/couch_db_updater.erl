@@ -462,11 +462,6 @@ by_seq_index_entries([{#full_doc_info{update_seq=OldSeq}, NewFullInfo} | Rest], 
             [OldSeq | AccRemoveBySeqs]).
 
 
-stem_full_doc_infos(#db{revs_limit=Limit}, DocInfos) ->
-    [Info#full_doc_info{rev_tree=couch_key_tree:stem(Tree, Limit)} ||
-            #full_doc_info{rev_tree=Tree}=Info <- DocInfos].
-
-
 modify_full_doc_info(Db, Id, MergeConflicts, nil, Docs, AccSeq) ->
     modify_full_doc_info(Db, Id, MergeConflicts, #full_doc_info{id=Id}, Docs, AccSeq);
 modify_full_doc_info(Db, Id, MergeConflicts, OldDocInfo,
@@ -572,6 +567,10 @@ modify_full_doc_info(Db, Id, MergeConflicts, OldDocInfo,
         {NewFullDocInfo#full_doc_info{deleted=Deleted}, NewSeq}
     end.
 
+
+stem_full_doc_infos(#db{revs_limit=Limit}, DocInfos) ->
+    [Info#full_doc_info{rev_tree=couch_key_tree:stem(Tree, Limit)} ||
+            #full_doc_info{rev_tree=Tree}=Info <- DocInfos].
 
 update_docs_int(Db, DocsList, NonRepDocs, MergeConflicts, FullCommit) ->
     #db{
