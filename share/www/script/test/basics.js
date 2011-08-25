@@ -94,7 +94,7 @@ couchTests.basics = function(debug) {
   // latest=true suppresses non-leaf revisions
   var result = db.open("COUCHDB-954", {open_revs:[oldRev,newRev], latest:true});
   T(result.length == 1, "should only get the child revision with latest=true");
-  T(result[0].ok);
+  T(result[0].ok._rev == newRev, "should get the child not the parent");
 
   // clean up after ourselves
   db.save({_id:"COUCHDB-954", _rev:newRev, _deleted:true});
