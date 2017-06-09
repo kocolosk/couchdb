@@ -169,18 +169,24 @@ get_db(DbName) ->
 
 get_db(DbName, Options) ->
     {Local, SameZone, DifferentZone} = mem3:group_by_proximity(mem3:shards(DbName)),
-    % Prefer shards on the same node over other nodes, prefer shards in the same zone over
-    % over zones and sort each remote list by name so that we don't repeatedly try the same node.
-    Shards = Local ++ lists:keysort(#shard.name, SameZone) ++ lists:keysort(#shard.name, DifferentZone),
+    % Prefer shards in the same zone over other zones and sort each remote
+    % list by name so that we don't repeatedly try the same node.
+    Shards = lists:keysort(#shard.name, SameZone) ++ lists:keysort(#shard.name, DifferentZone),
     % suppress shards from down nodes
-    Nodes = [node()|erlang:nodes()],
+    Nodes = erlang:nodes(),
     Live = [S || #shard{node = N} = S <- Shards, lists:member(N, Nodes)],
     Factor = list_to_integer(config:get("fabric", "shard_timeout_factor", "2")),
-    get_shard(Live, Options, 100, Factor).
+    get_shard(Local, Live, Options, 100, Factor).
 
-get_shard([], _Opts, _Timeout, _Factor) ->
+get_shard([], [], _Opts, _Timeout, _Factor) ->
     erlang:error({internal_server_error, "No DB shards could be opened."});
-get_shard([#shard{node = Node, name = Name} | Rest], Opts, Timeout, Factor) ->
+get_shard([#shard{name = Name} | Rest], NonLocal, Opts, Timeout, Factor) ->
+    try
+        couch_db:open(Name, Opts)
+    catch _:_ ->
+        get_shard(Rest, NonLocal, Opts, Timeout, Factor)
+    end;
+get_shard([], [#shard{node = Node, name = Name} | Rest], Opts, Timeout, Factor) ->
     Mon = rexi_monitor:start([rexi_utils:server_pid(Node)]),
     MFA = {fabric_rpc, open_shard, [Name, [{timeout, Timeout} | Opts]]},
     Ref = rexi:cast(Node, self(), MFA, [sync]),
@@ -192,9 +198,9 @@ get_shard([#shard{node = Node, name = Name} | Rest], Opts, Timeout, Factor) ->
         {Ref, {'rexi_EXIT', {{forbidden, _} = Error, _}}} ->
             throw(Error);
         {Ref, _Else} ->
-            get_shard(Rest, Opts, Timeout, Factor)
+            get_shard([], Rest, Opts, Timeout, Factor)
         after Timeout ->
-            get_shard(Rest, Opts, Factor * Timeout, Factor)
+            get_shard([], Rest, Opts, Factor * Timeout, Factor)
         end
     after
         rexi_monitor:stop(Mon)
