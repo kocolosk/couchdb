@@ -94,6 +94,9 @@ code_change(_OldVsn, #state{}=State, _Extra) ->
 handle_config_change("location", Key, Value, _, State) ->
     update_metadata([<<"location">>, ?l2b(Key)], convert_val(Value)),
     {ok, State};
+handle_config_change("roles", Key, Value, _, State) ->
+    update_metadata([<<"roles">>, ?l2b(Key)], convert_val(Value)),
+    {ok, State};
 handle_config_change(_, _, _, _, State) ->
     {ok, State}.
 
@@ -109,12 +112,12 @@ initialize_nodelist() ->
     {ok, {_, _, Doc}} = couch_db:fold_docs(Db, fun first_fold/2, {Db, SelfId, nil}, []),
     case Doc of
     nil ->
-        {NodeProps} = merge_config({[]}, ["location"]),
+        {NodeProps} = merge_config({[]}, ["location", "roles"]),
         ets:insert(?MODULE, {node(), NodeProps}),
         NewDoc = #doc{id = SelfId, body = {NodeProps}},
         {ok, _} = couch_db:update_doc(Db, NewDoc, []);
     #doc{id = SelfId, body = {DocProps}} = Doc ->
-        {NewProps} = merge_config({DocProps}, ["location"]),
+        {NewProps} = merge_config({DocProps}, ["location", "roles"]),
         if NewProps =/= DocProps ->
             couch_db:update_doc(Db, Doc#doc{body = {NewProps}});
         true ->
