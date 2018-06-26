@@ -91,8 +91,8 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, #state{}=State, _Extra) ->
     {ok, State}.
 
-handle_config_change("node", Key, Value, _, State) ->
-    update_metadata([{?l2b(Key), ?l2b(Value)}]),
+handle_config_change("location", Key, Value, _, State) ->
+    update_metadata([<<"location">>, ?l2b(Key)], convert_val(Value)),
     {ok, State};
 handle_config_change(_, _, _, _, State) ->
     {ok, State}.
@@ -106,15 +106,20 @@ initialize_nodelist() ->
     DbName = config:get("mem3", "nodes_db", "_nodes"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
     SelfId = couch_util:to_binary(node()),
-    NodeProps = [{?l2b(K), ?l2b(V)} || {K,V} <- config:get("node")],
     {ok, {_, _, Doc}} = couch_db:fold_docs(Db, fun first_fold/2, {Db, SelfId, nil}, []),
     case Doc of
     nil ->
+        {NodeProps} = merge_config({[]}, ["location"]),
         ets:insert(?MODULE, {node(), NodeProps}),
         NewDoc = #doc{id = SelfId, body = {NodeProps}},
         {ok, _} = couch_db:update_doc(Db, NewDoc, []);
-    #doc{id = SelfId} = Doc ->
-        update_metadata(Db, Doc, NodeProps)
+    #doc{id = SelfId, body = {DocProps}} = Doc ->
+        {NewProps} = merge_config({DocProps}, ["location"]),
+        if NewProps =/= DocProps ->
+            couch_db:update_doc(Db, Doc#doc{body = {NewProps}});
+        true ->
+            ok
+        end
     end,
     Seq = couch_db:get_update_seq(Db),
     couch_db:close(Db),
@@ -165,25 +170,48 @@ changes_callback({change, {Change}, _}, _) ->
 changes_callback(timeout, _) ->
     {ok, nil}.
 
-update_metadata(NewProps) ->
+update_metadata(KeyPath, Value) ->
     DbName = config:get("mem3", "nodes_db", "_nodes"),
     {ok, Db} = mem3_util:ensure_exists(DbName),
     try
         {ok, Doc} = couch_db:open_doc(Db, couch_util:to_binary(node()), [ejson_body]),
-        update_metadata(Db, Doc, NewProps)
+        #doc{body = {DocBody}} = Doc,
+        case merge_field(DocBody, KeyPath, Value) of
+        {DocBody} ->
+            % internal doc state matches .ini
+            ok;
+        {MergedBody} ->
+            NewDoc = Doc#doc{body = {MergedBody}},
+            {ok, _} = couch_db:update_doc(Db, NewDoc, [])
+        end
     after
         couch_db:close(Db)
     end.
 
-update_metadata(Db, #doc{body = {DocProps}} = Doc, NewProps) ->
-    SortedNewProps = lists:keysort(1, NewProps),
-    SortedDocProps = lists:keysort(1, DocProps),
-    case lists:ukeymerge(1, SortedNewProps, SortedDocProps) of
-        SortedDocProps ->
-            % internal doc state matches .ini
-            ok;
-        MergedProps ->
-            NewDoc = Doc#doc{body = {MergedProps}},
-            {ok, _} = couch_db:update_doc(Db, NewDoc, [])
-    end,
-    ok.
+merge_config({OldProps}, Sections) ->
+    lists:foldl(fun(Section, {OuterAcc}) ->
+        lists:foldl(fun({Key, Value}, {InnerAcc}) ->
+            merge_field(InnerAcc, [?l2b(Section), ?l2b(Key)], convert_val(Value))
+        end, {OuterAcc}, config:get(Section))
+    end, {OldProps}, Sections).
+
+merge_field(DocProps, [LastKey], Value) ->
+    {lists:ukeymerge(1, [{LastKey, Value}], lists:keysort(1, DocProps))};
+merge_field(DocProps, [Key | ChildPath], Value) ->
+    case lists:keytake(Key, 1, DocProps) of
+        false ->
+            {[{Key, merge_field([], ChildPath, Value)} | DocProps]};
+        {value, {Key, {Nest}}, OtherProps} when is_list(Nest) ->
+            {[{Key, merge_field(Nest, ChildPath, Value)} | OtherProps]};
+        {value, OtherType, OtherProps} ->
+            Msg = "Unexpected content in _nodes DB, skipping config merge",
+            couch_log:error(Msg, []),
+            {DocProps}
+    end.
+
+convert_val("true") ->
+    true;
+convert_val("false") ->
+    false;
+convert_val(Else) ->
+    ?l2b(Else).
