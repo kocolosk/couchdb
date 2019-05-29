@@ -1,0 +1,6 @@
+% Command to run on startup.
+
+code:add_path("./lib").
+
+Result = code:ensure_loaded(dreyfus_index).
+couch_log:info("Ensure dreyfus index module is loaded: ~p", [Result]).

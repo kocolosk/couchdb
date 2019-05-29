@@ -33,6 +33,10 @@ export COUCHDB_FAUXTON_DOCROOT={{fauxton_root}}
 ARGS_FILE="${COUCHDB_ARGS_FILE:-$ROOTDIR/etc/vm.args}"
 SYSCONFIG_FILE="${COUCHDB_SYSCONFIG_FILE:-$ROOTDIR/releases/$APP_VSN/sys.config}"
 
+if [ -e "${COUCHDB_BIN_DIR}/startup.erl" ]; then
+  cat "${COUCHDB_BIN_DIR}/startup.erl" > .erlang
+fi
+
 exec "$BINDIR/erlexec" -boot "$ROOTDIR/releases/$APP_VSN/couchdb" \
      -args_file "${ARGS_FILE}" \
      -config "${SYSCONFIG_FILE}" "$@"
